@@ -1,4 +1,69 @@
 {
+  "mappings": {
+    "properties": {
+      "productId": {
+        "type": "long"
+      },
+      "department": {
+        "type": "text",
+        "analyzer": "snowball",
+        "fields": {
+          "keyword": {
+            "type": "keyword",
+            "ignore_above": 256
+          }
+        }
+      },
+      "image": {
+        "type": "text",
+        "fields": {
+          "keyword": {
+            "type": "keyword",
+            "ignore_above": 256
+          }
+        }
+      },
+      "regularPrice": {
+        "type": "float"
+      },
+      "salePrice": {
+        "type": "float"
+      },
+      "salesRankLongTerm": {
+        "type": "integer"
+      },
+      "salesRankMediumTerm": {
+        "type": "integer"
+      },
+      "salesRankShortTerm": {
+        "type": "integer"
+      },
+      "customerReviewCount": {
+        "type": "integer"
+      },
+      "customerReviewAverage": {
+        "type": "float"
+      },
+      "name": {
+        "type": "text",
+        "analyzer": "snowball",
+        "fields": {
+          "keyword": {
+            "type": "keyword",
+            "ignore_above": 256
+          }
+        }
+      },
+      "shortDescription": {
+        "type": "text",
+        "analyzer": "snowball"
+      },
+      "longDescription": {
+        "type": "text",
+        "analyzer": "snowball"
+      }
+    }
+  },
   "settings": {
     "index.refresh_interval": "5s"
   }

@@ -12,6 +12,7 @@ import logging
 from time import perf_counter
 import concurrent.futures
 
+CONNECTION_ENABLED = True
 
 
 logger = logging.getLogger(__name__)
@@ -83,9 +84,12 @@ mappings =  [
 def get_opensearch():
     host = 'localhost'
     port = 9200
+    hosts = [{'host': host, 'port': port}]
     auth = ('admin', 'admin')
     #### Step 2.a: Create a connection to OpenSearch
     client = None
+    if CONNECTION_ENABLED:
+        client = OpenSearch(hosts=hosts, http_auth=auth, use_ssl=True, verify_certs=False, ssl_show_warn=False)
     return client
 
 
@@ -103,13 +107,33 @@ def index_file(file, index_name):
             xpath_expr = mappings[idx]
             key = mappings[idx + 1]
             doc[key] = child.xpath(xpath_expr)
-        #print(doc)
+        # print(doc)
         if 'productId' not in doc or len(doc['productId']) == 0:
             continue
+        # Otherwise, if the product ID is not a number, print a warning and skip it
+        if not doc['productId'][0].isdigit():
+            logger.warning(f"Skipping product {doc['productId'][0]} because it's not a number")
+            continue
         #### Step 2.b: Create a valid OpenSearch Doc and bulk index 2000 docs at a time
-        the_doc = None
+        # the_doc = None
+        the_doc = {
+            "_index": index_name,
+            # "_id": doc['productId'][0],
+            "_source": doc
+        }
         docs.append(the_doc)
 
+        if len(docs) >= 2000:
+            if CONNECTION_ENABLED:
+                bulk(client, docs, index=index_name)
+            docs_indexed += len(docs)
+            docs = []
+
+    if len(docs) > 0:
+        if CONNECTION_ENABLED:
+            bulk(client, docs, index=index_name)
+        docs_indexed += len(docs)
+        docs = []
     return docs_indexed
 
 @click.command()
@@ -125,6 +149,7 @@ def main(source_dir: str, index_name: str, workers: int):
         futures = [executor.submit(index_file, file, index_name) for file in files]
         for future in concurrent.futures.as_completed(futures):
             docs_indexed += future.result()
+            logger.info(f'File complete. Total docs so far: {docs_indexed}')
 
     finish = perf_counter()
     logger.info(f'Done. Total docs: {docs_indexed} in {(finish - start)/60} minutes')
