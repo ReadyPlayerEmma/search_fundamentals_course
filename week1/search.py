@@ -5,6 +5,8 @@ from flask import (
     Blueprint, redirect, render_template, request, url_for
 )
 
+from urllib.parse import quote
+
 from week1.opensearch import get_opensearch
 
 bp = Blueprint('search', __name__, url_prefix='/search')
@@ -23,7 +25,7 @@ def process_filters(filters_input):
         type = request.args.get(filter + ".type")
         display_name = request.args.get(filter + ".displayName", filter)
         applied_filters += "&filter.name={}&{}.type={}&{}.displayName={}".format(filter, filter, type, filter,
-                                                                                 display_name)
+                                                                                    quote(display_name))
         if type == "range":
             from_val = request.args.get(filter + ".from", None)
             to_val = request.args.get(filter + ".to", None)
@@ -41,14 +43,17 @@ def process_filters(filters_input):
             the_filter = {"range": {filter: to_from}}
             filters.append(the_filter)
             display_filters.append("{}: {} TO {}".format(display_name, from_val, to_val))
-            applied_filters += "&{}.from={}&{}.to={}".format(filter, from_val, filter, to_val)
+            if from_val not in ["*", ""]:
+                applied_filters += "&{}.from={}".format(quote(filter), quote(from_val))
+            if to_val not in ["*", ""]:
+                applied_filters += "&{}.to={}".format(quote(filter), quote(to_val))
         elif type == "terms":
             field = request.args.get(filter + ".fieldName", filter)
             key = request.args.get(filter + ".key", None)
             the_filter = {"term": {field: key}}
             filters.append(the_filter)
             display_filters.append("{}: {}".format(display_name, key))
-            applied_filters += "&{}.fieldName={}&{}.key={}".format(filter, field, filter, key)
+            applied_filters += "&{}.fieldName={}&{}.key={}".format(quote(filter), quote(field), quote(filter), quote(key))
     print("Filters: {}".format(filters))
 
     return filters, display_filters, applied_filters
@@ -94,14 +99,15 @@ def query():
     print("query obj: {}".format(query_obj))
 
     #### Step 4.b.ii
-    response = None   # TODO: Replace me with an appropriate call to OpenSearch
+    response = opensearch.search(body=query_obj, index="bbuy_products")
+    
     # Postprocess results here if you so desire
 
     #print(response)
     if error is None:
         return render_template("search_results.jinja2", query=user_query, search_response=response,
-                               display_filters=display_filters, applied_filters=applied_filters,
-                               sort=sort, sortDir=sortDir)
+                                display_filters=display_filters, applied_filters=applied_filters,
+                                sort=sort, sortDir=sortDir)
     else:
         redirect(url_for("index"))
 
@@ -109,13 +115,114 @@ def query():
 def create_query(user_query, filters, sort="_score", sortDir="desc"):
     print("Query: {} Filters: {} Sort: {}".format(user_query, filters, sort))
     query_obj = {
-        'size': 10,
+        'size': 20,
+        # "query": {
+
+        #     "bool":{
+        #         "must":[
+        #             {"query_string": {
+        #                 "query": user_query,
+        #                 "fields": ["name^100", "shortDescription^50", "longDescription^10", "department"]
+        #             }}
+        #         ],
+        #         # "should": [
+        #         #     {
+        #         #         "rank_feature": {
+        #         #             "field": "salesRankLongTerm",
+        #         #             "boost": 0.1
+        #         #         }
+        #         #     },
+        #         #     {
+        #         #         "rank_feature": {
+        #         #             "field": "salesRankMediumTerm",
+        #         #             "boost": 0.1
+        #         #         }
+        #         #     },
+        #         #     {
+        #         #         "rank_feature": {
+        #         #             "field": "salesRankShortTerm",
+        #         #             "boost": 0.1
+        #         #         }
+        #         #     },
+        #         # ],
+        #         "filter": filters
+        #     }
+        # },
         "query": {
-            "match_all": {} # Replace me with a query that both searches and filters
+            "script_score": {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {
+                                "multi_match": {
+                                    "query": user_query,
+                                    "fields": ["name^100", "shortDescription^50", "longDescription^10", "department"],
+                                    "type": "most_fields",
+                                    "operator": "or",
+                                    "minimum_should_match": "33%",
+                                    "tie_breaker": 0.0,
+                                    "analyzer": "snowball",
+                                    "boost": 1,
+                                    "fuzziness": "AUTO",
+                                    "fuzzy_transpositions": True,
+                                    "lenient": False,
+                                    "prefix_length": 0,
+                                    "max_expansions": 50,
+                                    "auto_generate_synonyms_phrase_query": True,
+                                    "zero_terms_query": "all",
+                                }
+                            }
+                        ],
+                        "filter": filters
+                    }
+                },
+                "script": {
+                    "source": """
+                        long salesRankShortTerm = doc['salesRankShortTerm'].empty ? 100000 : doc['salesRankShortTerm'].value;
+                        long salesRankMediumTerm = doc['salesRankMediumTerm'].empty ? salesRankShortTerm : doc['salesRankMediumTerm'].value;
+                        long salesRankLongTerm = doc['salesRankLongTerm'].empty ? salesRankMediumTerm : doc['salesRankLongTerm'].value;
+                        long customerReviewCount = doc['customerReviewCount'].empty ? 0 : doc['customerReviewCount'].value;
+                        double averageSalesRank = (salesRankShortTerm + salesRankMediumTerm + salesRankLongTerm)/3.0f;
+                        double logInput = (float)salesRankShortTerm + 9.0f;
+                        double salesRankScore = (1.0f + (1 / Math.log10(logInput)));
+                        double customerReviewScore = customerReviewCount * 0.005f;
+                        double finalScore = (salesRankScore + customerReviewScore) * _score;
+                        return finalScore;
+                        """
+                }
+            }
         },
         "aggs": {
             #### Step 4.b.i: create the appropriate query and aggregations here
-
+            "regularPrice": {
+                "range": {
+                    "field": "regularPrice",
+                    "ranges": [
+                        {"to": 10},
+                        {"from": 10, "to": 25},
+                        {"from": 25, "to": 50},
+                        {"from": 50, "to": 100},
+                        {"from": 100, "to": 200},
+                        {"from": 200}
+                    ]
+                }
+            },
+            "department": {
+                "terms": {
+                    "field": "department.keyword"
+                }
+            },
+            "missing_images": {
+                "filter": {
+                    "bool": {
+                        "must_not": {
+                            "exists": {
+                                "field": "image"
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     return query_obj
